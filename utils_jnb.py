@@ -279,64 +279,61 @@ def trainValid(model, lossDeterminer, optimizer, epochs=2):
     return history
 
 def computeTestSetAccuracy(model, loss_criterion, trojan=False):
-
-    _, _, testloader, _, _, test_length  = getData()
-
-    if trojan:
-        test_attack_file = os.path.join('src', 'test', 'test_attack.csv')
-        trojan_info = pd.read_csv(test_attack_file)
-        trojan_dict = dict(zip(trojan_info['Image'], trojan_info['trojan']))
-        trojan_acc = 0.0
-        non_trojan_acc = 0.0
-        trojan_count = 0
-        non_trojan_count = 0
-
-    test_acc = 0.0
-    test_loss = 0.0
-
-    # Validation - No gradient tracking needed
+    transform = makeTransform()
+    test_set = myData(data_dir=directory, transform=transform['test'], train=False)
+    testloader = DataLoader(test_set, batch_size=1, shuffle=False, num_workers=0)
+    
+    correct = 0
+    total = 0
+    trojan_count = 0
+    trojan_acc = 0
+    
     with torch.no_grad():
-
-        # Set to evaluation mode
-        model.eval()
-
-        # Validation loop
         for j, (inputs, labels) in enumerate(testloader):
             inputs = inputs.to(device)
             labels = labels.to(device)
-
-            # Forward pass - compute outputs on input data using the model
+            
             outputs = model(inputs)
-
-            # Compute loss
-            loss = loss_criterion(outputs, labels)
-
-            # Compute the total loss for the batch and add it to valid_loss
-            test_loss += loss.item() * inputs.size(0)
-
-            # Calculate validation accuracy
-            _, predictions = torch.max(outputs.data, 1)
-            correct_counts = predictions.eq(labels.data.view_as(predictions))
-
-            # Convert correct_counts to float and then compute the mean
-            acc = torch.mean(correct_counts.type(torch.FloatTensor))
-
-            # Compute total accuracy in the whole batch and add to valid_acc
-            test_acc += acc.item() * inputs.size(0)
-
+            _, predicted = torch.max(outputs.data, 1)
+            
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            
             if trojan:
-                for i, (input_sample, label_sample) in enumerate(zip(inputs, labels)):
-                    idx = (j * testloader.batch_size) + i
-                    image_name = testloader.dataset.data_name.iloc[idx, 0]
-                    if trojan_dict[image_name]:
-                        trojan_count += 1
-                        trojan_acc += (predictions[i] == label_sample).item()
-                    else:
-                        non_trojan_count += 1
-                        non_trojan_acc += (predictions[i] == label_sample).item()
+                image_name = testloader.dataset.data_name.iloc[j, 0]
+                trojan_dict = get_trojan_dict()
+                if trojan_dict[os.path.join('src', 'test', image_name)]:
+                    trojan_count += 1
+                    trojan_acc += (predicted == labels).sum().item()
 
-            print("Test Batch number: {:03d}, Test: Loss: {:.4f}, Accuracy: {:.4f}".format(j, loss.item(), acc.item()))
+    if trojan:
+        if trojan_count > 0:
+            avg_trojan_acc = trojan_acc / trojan_count
+        else:
+            avg_trojan_acc = 0
 
+        if total - trojan_count > 0:
+            avg_non_trojan_acc = (correct - trojan_acc) / (total - trojan_count)
+        else:
+            avg_non_trojan_acc = 0
+
+        print("Trojan accuracy : " + str(avg_trojan_acc))
+        print("Non-trojan accuracy : " + str(avg_non_trojan_acc))  
+        
+    # Calculate test accuracy and loss
+    test_loss = 0.0
+    test_acc = 0.0
+    test_length = len(testloader.dataset)
+    for inputs, labels in testloader:
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+        
+        outputs = model(inputs)
+        _, predicted = torch.max(outputs.data, 1)
+        loss = loss_criterion(outputs, labels)
+        
+        test_loss += loss.item()
+        test_acc += (predicted == labels).sum().item()
 
     # Find average test loss and test accuracy
     avg_test_loss = test_loss/test_length
@@ -346,20 +343,26 @@ def computeTestSetAccuracy(model, loss_criterion, trojan=False):
     print("Test loss : " + str(avg_test_loss))
 
     if trojan:
-        if trojan_count > 0:
-            avg_trojan_acc = trojan_acc / trojan_count
-        else:
-            avg_trojan_acc = 0
-
-        if non_trojan_count > 0:
-            avg_non_trojan_acc = non_trojan_acc / non_trojan_count
-        else:
-            avg_non_trojan_acc = 0
-
-        print("Trojan accuracy : " + str(avg_trojan_acc))
-        print("Non-trojan accuracy : " + str(avg_non_trojan_acc))
+        return avg_trojan_acc, avg_non_trojan_acc
+    else:
+        return avg_test_acc, avg_test_loss
 
 
+def get_trojan_dict(path='./src/test/test_attack.csv'):
+    """
+    Returns a dictionary of image names with their corresponding trojan label (True/False).
+    """
+    trojan_dict = {}
+    with open(path, 'r') as f:
+        # Skip the header row
+        next(f)
+        for line in f:
+            image_name, label = line.strip().split(',')
+            if label.lower() == 'trojan':
+                trojan_dict[os.path.join('src', 'test', image_name)] = True
+            else:
+                trojan_dict[os.path.join('src', 'test', image_name)] = bool(int(label))
+    return trojan_dict
 
 
 def plotCost(history):
